@@ -1,14 +1,16 @@
-# Welcome to your CDK TypeScript project!
+# Load Test using aws cdk and JMeter
 
-This is a blank project for TypeScript development with CDK.
-
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+This project utilizes aws cdk to spin up ECS Cluser and FARGATE tasks and run JMeter scripts using docker images running on these FARGATE tasks.
+1. Creates VPCs, Subnets & Security Group
+2. Creates ECS Cluster
+3. Creates FARGATE Tasks as load generators
+4. Creates EC2 instance in ECS Cluster for JMeter Controller
+5. Builds Docker image for JMeter Server and Client
+6. Pushes Docker images in ECR.
+7. Uses Docker images for JMeter Server and Client to run load tests on FARGATE Tasks
 
 ## Useful commands
 
  * `npm run build`   compile typescript to js
- * `npm run watch`   watch for changes and compile
- * `npm run test`    perform the jest unit tests
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
  * `cdk synth`       emits the synthesized CloudFormation template
+ * `cdk deploy`      deploy this stack to your default AWS account/region 
