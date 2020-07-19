@@ -2,7 +2,7 @@
   "name": "aws-cdk-load-test-jmeter",
   "version": "0.1.0",
   "bin": {
-    "aws-cdk-load-test-jmeter": "bin/aws-cdk-load-test-jmeter.js"
+    "aws-cdk-load-test-jmeter": "bin/app.js"
   },
   "scripts": {
     "build": "tsc",
@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@aws-cdk/aws-ecs": "^1.52.0",
+    "@aws-cdk/aws-s3": "^1.52.0",
     "@aws-cdk/core": "1.52.0",
     "source-map-support": "^0.5.16"
   }
