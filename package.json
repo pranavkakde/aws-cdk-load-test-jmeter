@@ -2,13 +2,15 @@
   "name": "aws-cdk-load-test-jmeter",
   "version": "0.1.0",
   "bin": {
-    "aws-cdk-load-test-jmeter": "bin/aws-cdk-load-test-jmeter.js"
+    "aws-cdk-load-test-jmeter": "bin/app.js"
   },
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "cdk": "cdk"
+    "cdk": "cdk",
+    "synth": "npm run build && cdk synth",
+    "deploy": "tsc && cdk synth && cdk deploy"
   },
   "devDependencies": {
     "@aws-cdk/assert": "1.52.0",
@@ -22,6 +24,7 @@
   },
   "dependencies": {
     "@aws-cdk/aws-ecs": "^1.52.0",
+    "@aws-cdk/aws-s3": "^1.52.0",
     "@aws-cdk/core": "1.52.0",
     "source-map-support": "^0.5.16"
   }

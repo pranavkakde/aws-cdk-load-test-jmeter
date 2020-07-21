@@ -25,4 +25,4 @@ RUN apk update \
 	&& curl -L ${JMETER_PLUGINS_DOWNLOAD_URL}/jmeter-plugins-manager/1.4/jmeter-plugins-manager-1.4.jar -o ${JMETER_PLUGINS_FOLDER}/jmeter-plugins-manager-1.4.jar
 
 ENV PATH $PATH:$JMETER_BIN
-RUN jmeter-server -n
+RUN jmeter -Jserver.rmi.ssl.disable=true -n
