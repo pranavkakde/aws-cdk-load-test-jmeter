@@ -5,7 +5,14 @@ import { EcsOptimizedAmi, EcsOptimizedImage } from '@aws-cdk/aws-ecs';
 import ecr = require("@aws-cdk/aws-ecr");
 import * as s3 from '@aws-cdk/aws-s3';
 import { BlockPublicAccess } from '@aws-cdk/aws-s3';
-import * as iam from '@aws-cdk/aws-iam';
+
+import { 
+  ManagedPolicy, 
+  Role, 
+  ServicePrincipal, 
+  PolicyStatement, 
+  Effect 
+} from '@aws-cdk/aws-iam';
 import {UserData} from '@aws-cdk/aws-ec2';
 
 export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
@@ -27,7 +34,7 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
 
     const securityGroup = new ec2.SecurityGroup(this, 'loadgen-sg', { 
       vpc, 
-      allowAllOutbound: false,
+      allowAllOutbound: true,
     });
 
     securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(1099));
@@ -43,46 +50,40 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
     const cluster = new ecs.Cluster(this, 'loadgen-cluster', {
       vpc: vpc
     });    
-    //create a new ec2 instance
-    /*cluster.addCapacity('controller',{
-      instanceType: new ec2.InstanceType('t2.micro'),
-      desiredCapacity: 1,
-      machineImage: EcsOptimizedImage.amazonLinux(),  
-      canContainersAccessInstanceRole: true      
-    });*/
     
-    //create a task definition and set the network mode to aws vpc
-    /*const taskDefinition = new ecs.Ec2TaskDefinition(this, 'TaskDef',{    
-      networkMode: ecs.NetworkMode.AWS_VPC
-    });*/
-    
-    const fgTaskDef = new ecs.FargateTaskDefinition(this, "FG-TaskDef", {            
+    const ecsServiceRole = new Role(this, 'TaskExecutionServiceRole', {
+      assumedBy: new ServicePrincipal('ecs-tasks.amazonaws.com')
+    });
+    ecsServiceRole.addToPolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        resources: ['*'],
+        actions: [            
+          'ecr:GetAuthorizationToken',
+          'ecr:BatchCheckLayerAvailability',
+          'ecr:GetDownloadUrlForLayer',
+          'ecr:BatchGetImage',
+          'logs:CreateLogStream',
+          'logs:PutLogEvents',
+          'logs:CreateLogGroups',
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+      })
+    );
+    const fargateTaskDef = new ecs.FargateTaskDefinition(this, "FG-TaskDef", {            
       memoryLimitMiB: 512,
-      cpu: 256
-    })
-    //image: ecs.ContainerImage.fromAsset("./jmeter-server-image/"),
-    //Create jmeter server container
-    /*const serverContainer = taskDefinition.addContainer('server-container', {
-      image: ecs.ContainerImage.fromRegistry('456088684141.dkr.ecr.us-east-1.amazonaws.com/aws-cdk/assets:latest'),
-      memoryLimitMiB: 1024,
-      logging
+      cpu: 256,
+      taskRole: ecsServiceRole,
+      executionRole: ecsServiceRole      
     });
 
-    /*serverContainer.addPortMappings({
-      containerPort: 51000,
-      protocol: ecs.Protocol.TCP,
-    });
-    serverContainer.addPortMappings({
-      containerPort: 52000,
-      protocol: ecs.Protocol.TCP,
-    });
-    serverContainer.addPortMappings({
-      containerPort: 51000,
-      protocol: ecs.Protocol.TCP,
-    });*/
-
-    const fargateContainer = fgTaskDef.addContainer('client-container', {
-      image: ecs.ContainerImage.fromRegistry('456088684141.dkr.ecr.us-east-1.amazonaws.com/aws-cdk/assets:latest'),
+    const ecrRepository = ecr.Repository.fromRepositoryName(this,'ecrrepository','aws-cdk/assets');
+    const fargateContainer = fargateTaskDef.addContainer('client-container', {
+      //image: ecs.ContainerImage.fromRegistry('456088684141.dkr.ecr.us-east-1.amazonaws.com/aws-cdk/assets:latest'),
+      image: ecs.ContainerImage.fromEcrRepository(ecrRepository,'latest'),
       logging,
       command: [
                 "jmeter-server", 
@@ -93,7 +94,7 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
                 "-LTRACE",
                 "-Lorg.apache.jmeter.protocol.http.control=TRACE",
                 "-Lorg.apache.http=TRACE"
-            ]
+            ]            
     });
     fargateContainer.addPortMappings({
       hostPort: 443,
@@ -135,12 +136,21 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       containerPort: 4445,
       protocol: ecs.Protocol.UDP
     });
+    
+    const fargateService = new ecs.FargateService(this, 'FargateService', {
+      cluster,
+      taskDefinition:fargateTaskDef,
+      desiredCount:1,
+      securityGroup,
+      assignPublicIp: true
+    });
 
     const s3bucket = new s3.Bucket(this,'jmeter-data', {
       blockPublicAccess: new BlockPublicAccess({ blockPublicPolicy: true })
     });    
     
-    const userData = UserData.forOperatingSystem(ec2.OperatingSystemType.LINUX);
+    //launch an ec2 instance
+    /*const userData = UserData.forOperatingSystem(ec2.OperatingSystemType.LINUX);
     const connectToCluster = `echo ECS_CLUSTER=${cluster.clusterName} >> /etc/ecs/ecs.config`;
     userData.addCommands(connectToCluster);
     userData.addCommands('echo `curl -s http://169.254.169.254/latest/meta-data/instance-id`');
@@ -149,8 +159,45 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       instanceType: new ec2.InstanceType('t2.micro'),
       machineImage: EcsOptimizedImage.amazonLinux(),
       vpc,
-      userData
-    })
+      userData      
+    });
+    */    
+    const ec2TaskDef = new ecs.Ec2TaskDefinition(this, "Ec2TaskDef", {
+      taskRole: ecsServiceRole,
+      networkMode: ecs.NetworkMode.AWS_VPC,
+      executionRole: ecsServiceRole      
+    });
+
+
+    const ec2Container = ec2TaskDef.addContainer('server-container', {      
+      image: ecs.ContainerImage.fromEcrRepository(ecrRepository,'latest'),
+      logging,
+      command: [
+                "jmeter-server", 
+                "-Jserver.rmi.ssl.disable=true", 
+                "-Dserver.port=1099", 
+                "-Dserver.rmi.localport=50000",
+                "-Dclient.rmi.localport=51000",
+                "-LTRACE",
+                "-Lorg.apache.jmeter.protocol.http.control=TRACE",
+                "-Lorg.apache.http=TRACE"
+            ],
+      memoryLimitMiB:512      
+    });
+    //create a new ec2 instance
+    cluster.addCapacity('controller',{
+      instanceType: new ec2.InstanceType('t2.micro'),
+      desiredCapacity: 1,
+      machineImage: EcsOptimizedImage.amazonLinux(),  
+      canContainersAccessInstanceRole: true            
+    });
+
+    const ec2Service = new ecs.Ec2Service(this, 'Ec2Service', {
+      cluster,
+      taskDefinition: ec2TaskDef,
+      desiredCount:1,
+      securityGroup            
+    });
 
   }
 }
