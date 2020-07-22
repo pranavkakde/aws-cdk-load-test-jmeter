@@ -1,11 +1,11 @@
 import * as cdk from '@aws-cdk/core';
 import * as ecs from '@aws-cdk/aws-ecs';
 import * as ec2 from '@aws-cdk/aws-ec2';
-import { EcsOptimizedAmi, EcsOptimizedImage } from '@aws-cdk/aws-ecs';
-import ecr = require("@aws-cdk/aws-ecr");
+import { EcsOptimizedImage, Volume, MountPoint } from '@aws-cdk/aws-ecs';
+import * as ecr from "@aws-cdk/aws-ecr";
 import * as s3 from '@aws-cdk/aws-s3';
 import { BlockPublicAccess } from '@aws-cdk/aws-s3';
-
+import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { 
   ManagedPolicy, 
   Role, 
@@ -74,7 +74,7 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       })
     );
     const fargateTaskDef = new ecs.FargateTaskDefinition(this, "FG-TaskDef", {            
-      memoryLimitMiB: 512,
+      memoryLimitMiB: 1024,
       cpu: 256,
       taskRole: ecsServiceRole,
       executionRole: ecsServiceRole      
@@ -144,11 +144,16 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       securityGroup,
       assignPublicIp: true
     });
-
+    
     const s3bucket = new s3.Bucket(this,'jmeter-data', {
       blockPublicAccess: new BlockPublicAccess({ blockPublicPolicy: true })
     });    
     
+    const s3dep = new s3deploy.BucketDeployment(this, 'jmeterfiles', {
+      sources: [s3deploy.Source.asset('./files')],       
+      destinationBucket: s3bucket
+    });
+
     //launch an ec2 instance
     /*const userData = UserData.forOperatingSystem(ec2.OperatingSystemType.LINUX);
     const connectToCluster = `echo ECS_CLUSTER=${cluster.clusterName} >> /etc/ecs/ecs.config`;
@@ -162,41 +167,69 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       userData      
     });
     */    
+    const volume:Volume = {
+      name:'jmetervol',
+      host: {
+        sourcePath: "/tmp"
+      }
+    }
     const ec2TaskDef = new ecs.Ec2TaskDefinition(this, "Ec2TaskDef", {
       taskRole: ecsServiceRole,
-      networkMode: ecs.NetworkMode.AWS_VPC,
-      executionRole: ecsServiceRole      
+      networkMode: ecs.NetworkMode.HOST,
+      executionRole: ecsServiceRole ,
+      volumes: [volume]      
     });
 
+    //create a new ec2 instance
+    const cap = cluster.addCapacity('controller',{
+      instanceType: new ec2.InstanceType('t2.micro'),
+      desiredCapacity: 1,
+      machineImage: EcsOptimizedImage.amazonLinux(),  
+      canContainersAccessInstanceRole: true       
+    });
+    
+    const userData = `
+      #!/bin/bash
+      yum install -y aws-cli
+      export _JAVA_OPTIONS=\'-Djava.net.preferIPv4Stack=true -Djava.net.preferIPv6Addresses=false -Djava.net.preferIPv4Addresses=true\'
+      echo \`curl -s http://169.254.169.254/latest/meta-data/instance-id\`    
+      instanceid=\`curl -s http://169.254.169.254/latest/meta-data/instance-id\`
+      ipa=\`curl -s http://169.254.169.254/latest/meta-data/local-ipv4\`      
+      aws s3 cp ${s3bucket.bucketArn}/TestPlan.jmx /tmp/TestPlan.jmx
+      loadgenRemoteIPs="10.0.0.1"
+    `
+
+    cap.addUserData(userData);
 
     const ec2Container = ec2TaskDef.addContainer('server-container', {      
       image: ecs.ContainerImage.fromEcrRepository(ecrRepository,'latest'),
       logging,
       command: [
-                "jmeter-server", 
+                "jmeter -n -t /tmp/TestPlan.jmx -l /tmp/outfile.jtl -j /tmp/jmeter.log",
+                "-R $loadgenRemoteIPs",
                 "-Jserver.rmi.ssl.disable=true", 
                 "-Dserver.port=1099", 
                 "-Dserver.rmi.localport=50000",
-                "-Dclient.rmi.localport=51000",
-                "-LTRACE",
+                "-Dclient.rmi.localport=51000",                
                 "-Lorg.apache.jmeter.protocol.http.control=TRACE",
-                "-Lorg.apache.http=TRACE"
+                "-Lorg.apache.http=TRACE",
+                "-Djava.rmi.server.hostname=$ipa"
             ],
-      memoryLimitMiB:512      
+      memoryLimitMiB:2048      
     });
-    //create a new ec2 instance
-    cluster.addCapacity('controller',{
-      instanceType: new ec2.InstanceType('t2.micro'),
-      desiredCapacity: 1,
-      machineImage: EcsOptimizedImage.amazonLinux(),  
-      canContainersAccessInstanceRole: true            
-    });
+    //add enviroment variables
+
+    const mountPoints:MountPoint={
+      containerPath:"/tmp",
+      readOnly:false,
+      sourceVolume: "jmetervol"
+    }
+    ec2Container.addMountPoints(mountPoints);
 
     const ec2Service = new ecs.Ec2Service(this, 'Ec2Service', {
       cluster,
       taskDefinition: ec2TaskDef,
-      desiredCount:1,
-      securityGroup            
+      desiredCount:1      
     });
 
   }
