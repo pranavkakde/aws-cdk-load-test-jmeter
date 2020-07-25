@@ -1,54 +1,33 @@
 import * as cdk from '@aws-cdk/core';
 import * as ecs from '@aws-cdk/aws-ecs';
 import * as ec2 from '@aws-cdk/aws-ec2';
+import {SubnetSelection} from '@aws-cdk/aws-ec2';
 import { EcsOptimizedImage, Volume, MountPoint } from '@aws-cdk/aws-ecs';
 import * as ecr from "@aws-cdk/aws-ecr";
-import * as s3 from '@aws-cdk/aws-s3';
-import { BlockPublicAccess } from '@aws-cdk/aws-s3';
-import * as s3deploy from '@aws-cdk/aws-s3-deployment';
 import { 
   ManagedPolicy, 
   Role, 
   ServicePrincipal, 
   PolicyStatement, 
-  Effect 
+  Effect  
 } from '@aws-cdk/aws-iam';
 import {UserData} from '@aws-cdk/aws-ec2';
+import { VPCStackProps } from './vpc-stack';
 
-export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+export class LoadGenStack extends cdk.Stack {
+  constructor(scope: cdk.Construct, id: string, vpcProps: VPCStackProps) {
+    super(scope, id, vpcProps);
     
+    const portList = [443,80,1099,50000,51000,51001,51002];
     //create log driver
     const logging = new ecs.AwsLogDriver({
       streamPrefix: "loadgen",
     });
 
-    //create a VPC
-    const vpc = new ec2.Vpc(this, 'loadgen-vpc', {
-      enableDnsHostnames: true,
-      enableDnsSupport: true,
-      maxAzs: 1,
-      cidr: '10.0.0.0/16'
-    });
-
-    const securityGroup = new ec2.SecurityGroup(this, 'loadgen-sg', { 
-      vpc, 
-      allowAllOutbound: true,
-    });
-
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(1099));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(4445));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(50000));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(51000));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(51001));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(51002));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443));
-    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80));
-
+    
     //create an ecs cluster
     const cluster = new ecs.Cluster(this, 'loadgen-cluster', {
-      vpc: vpc
+      vpc: vpcProps.vpc
     });    
     
     const ecsServiceRole = new Role(this, 'TaskExecutionServiceRole', {
@@ -65,11 +44,7 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
           'ecr:BatchGetImage',
           'logs:CreateLogStream',
           'logs:PutLogEvents',
-          'logs:CreateLogGroups',
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage"
+          'logs:CreateLogGroups'
         ]
       })
     );
@@ -81,8 +56,7 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
     });
 
     const ecrRepository = ecr.Repository.fromRepositoryName(this,'ecrrepository','aws-cdk/assets');
-    const fargateContainer = fargateTaskDef.addContainer('client-container', {
-      //image: ecs.ContainerImage.fromRegistry('456088684141.dkr.ecr.us-east-1.amazonaws.com/aws-cdk/assets:latest'),
+    const fargateContainer = fargateTaskDef.addContainer('client-container', {      
       image: ecs.ContainerImage.fromEcrRepository(ecrRepository,'latest'),
       logging,
       command: [
@@ -95,42 +69,16 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
                 "-Lorg.apache.jmeter.protocol.http.control=TRACE",
                 "-Lorg.apache.http=TRACE"
             ]            
+    });   
+    
+    portList.map((portNumber, index, arr) => {
+      fargateContainer.addPortMappings({
+        hostPort: portNumber,
+        containerPort: portNumber,
+        protocol: ecs.Protocol.TCP
+      });
     });
-    fargateContainer.addPortMappings({
-      hostPort: 443,
-      containerPort: 443,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 80,
-      containerPort: 80,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 1099,
-      containerPort: 1099,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 50000,
-      containerPort: 50000,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 51000,
-      containerPort: 51000,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 51001,
-      containerPort: 51001,
-      protocol: ecs.Protocol.TCP
-    });
-    fargateContainer.addPortMappings({
-      hostPort: 51002,
-      containerPort: 51002,
-      protocol: ecs.Protocol.TCP
-    }); 
+
     fargateContainer.addPortMappings({
       hostPort: 4445,
       containerPort: 4445,
@@ -141,33 +89,89 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
       cluster,
       taskDefinition:fargateTaskDef,
       desiredCount:1,
-      securityGroup,
+      securityGroup: vpcProps.securityGroup,
       assignPublicIp: true
     });
     
-    const s3bucket = new s3.Bucket(this,'jmeter-data', {
-      blockPublicAccess: new BlockPublicAccess({ blockPublicPolicy: true })
-    });    
-    
-    const s3dep = new s3deploy.BucketDeployment(this, 'jmeterfiles', {
-      sources: [s3deploy.Source.asset('./files')],       
-      destinationBucket: s3bucket
+
+    const ec2InstanceRole1 = new Role(this, 'ec2IntanceRoleCDK', {
+      assumedBy: new ServicePrincipal('ec2.amazonaws.com')
     });
+    ec2InstanceRole1.addToPolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        resources: ['*'],
+        actions: [            
+          'ecr:GetAuthorizationToken',
+          'ecr:BatchCheckLayerAvailability',
+          'ecr:GetDownloadUrlForLayer',
+          'ecr:BatchGetImage',
+          'logs:CreateLogStream',
+          'logs:PutLogEvents',
+          'logs:CreateLogGroups',
+          'ec2:DescribeTags',
+          'ecs:CreateCluster',
+          'ecs:DeregisterContainerInstance',
+          'ecs:DiscoverPollEndpoint',
+          'ecs:Poll',
+          'ecs:RegisterContainerInstance',
+          'ecs:StartTelemetrySession',
+          'ecs:UpdateContainerInstancesState',
+          'ecs:Submit*',
+          'ecs:*',
+          's3:*',
+          'ec2:Describe*',
+          'cloudwatch:ListMetrics',
+          'cloudwatch:GetMetricStatistics',
+          'cloudwatch:Describe*',
+          'autoscaling:Describe*'
+        ]
+      })
+    );
 
     //launch an ec2 instance
-    /*const userData = UserData.forOperatingSystem(ec2.OperatingSystemType.LINUX);
+    const userData = UserData.forOperatingSystem(ec2.OperatingSystemType.LINUX);
     const connectToCluster = `echo ECS_CLUSTER=${cluster.clusterName} >> /etc/ecs/ecs.config`;
     userData.addCommands(connectToCluster);
     userData.addCommands('echo `curl -s http://169.254.169.254/latest/meta-data/instance-id`');
+    userData.addCommands('yum install -y aws-cli');    
+    userData.addCommands('aws ecr get-login --region us-east-1 --no-include-email | sh')
+    userData.addCommands('export _JAVA_OPTIONS=\'-Djava.net.preferIPv4Stack=true -Djava.net.preferIPv6Addresses=false -Djava.net.preferIPv4Addresses=true\'');
+    userData.addCommands('instanceid=\`curl -s http://169.254.169.254/latest/meta-data/instance-id\`');
+    userData.addCommands('ipa=\`curl -s http://169.254.169.254/latest/meta-data/local-ipv4\`');
+    const getS3File = `aws s3 cp ${vpcProps.s3bucket.s3UrlForObject()}/TestPlan.jmx /home/ec2-user/TestPlan.jmx`;
+    const echoS3 = `echo ${getS3File}`;    
+    userData.addCommands(echoS3);
+    userData.addCommands(getS3File);
+    userData.addCommands('echo $ipa');
+    userData.addCommands('echo $instanceid');
+    const getIPs = `aws ecs list-tasks --cluster ${cluster.clusterName} --region us-east-1 --query 'taskArns[]' --output text | 
+                    while read line;
+                    do loadgenRemoteIPs=\`aws ecs describe-tasks --cluster ${cluster.clusterName} --region us-east-1 --tasks $line --query 'tasks[].containers[].networkInterfaces[].privateIpv4Address' --output text\`;
+                    echo $loadgenRemoteIPs;
+                    done`;    
+    userData.addCommands(getIPs);    
+    const imagePath = `${ecrRepository.repositoryUri}:latest`
+    const dockerCmd = `docker run --network host --mount type=bind,source=/home/ec2-user,target=/tmp ${imagePath} jmeter -n -t /tmp/TestPlan.jmx -l /tmp/outfile.jtl -j /tmp/jmeter.log -R $loadgenRemoteIPs -Dserver.port=1099 -Dclient.rmi.localport=51000 -Dserver.rmi.localport=50000 -Lorg.apache.jmeter.protocol.http.control=TRACE -Lorg.apache.http=TRACE -LTRACE -Jserver.rmi.ssl.disable=true -Djava.rmi.server.hostname=$ipa`
+    const echoDocker = `echo ${dockerCmd}`;
+    userData.addCommands(echoDocker);
+    userData.addCommands(dockerCmd);
+
+    const pubSubnet:SubnetSelection={      
+      subnets: vpcProps.vpc.publicSubnets
+    }  
     
     const controller = new ec2.Instance(this, 'controller',{
       instanceType: new ec2.InstanceType('t2.micro'),
       machineImage: EcsOptimizedImage.amazonLinux(),
-      vpc,
-      userData      
+      vpc: vpcProps.vpc,
+      userData,
+      vpcSubnets: pubSubnet,
+      securityGroup: vpcProps.securityGroup,
+      role: ec2InstanceRole1    
     });
-    */    
-    const volume:Volume = {
+        
+    /*const volume:Volume = {
       name:'jmetervol',
       host: {
         sourcePath: "/tmp"
@@ -175,9 +179,9 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
     }
     const ec2TaskDef = new ecs.Ec2TaskDefinition(this, "Ec2TaskDef", {
       taskRole: ecsServiceRole,
-      networkMode: ecs.NetworkMode.HOST,
+      networkMode: ecs.NetworkMode.AWS_VPC,
       executionRole: ecsServiceRole ,
-      volumes: [volume]      
+      volumes: [volume]         
     });
 
     //create a new ec2 instance
@@ -217,20 +221,36 @@ export class AwsCdkLoadTestJmeterStack extends cdk.Stack {
             ],
       memoryLimitMiB:2048      
     });
-    //add enviroment variables
-
+    //add enviroment variables    
     const mountPoints:MountPoint={
       containerPath:"/tmp",
       readOnly:false,
       sourceVolume: "jmetervol"
     }
     ec2Container.addMountPoints(mountPoints);
-
+    portList.map((portNumber, index, arr) => {
+      ec2Container.addPortMappings({
+        hostPort: portNumber,
+        containerPort: portNumber,
+        protocol: ecs.Protocol.TCP
+      });
+    });
+    ec2Container.addPortMappings({
+      hostPort: 4445,
+      containerPort: 4445,
+      protocol: ecs.Protocol.UDP
+    });
+    const pubSubnet:SubnetSelection={      
+      subnets:vpc.publicSubnets      
+    }    
     const ec2Service = new ecs.Ec2Service(this, 'Ec2Service', {
       cluster,
       taskDefinition: ec2TaskDef,
-      desiredCount:1      
+      desiredCount:1,
+      securityGroup,
+      vpcSubnets: pubSubnet,
+      assignPublicIp: true      
     });
-
+    */
   }
 }
