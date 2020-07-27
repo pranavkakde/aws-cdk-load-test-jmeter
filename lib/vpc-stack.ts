@@ -1,10 +1,11 @@
 import * as cdk from '@aws-cdk/core';
 import * as ec2 from '@aws-cdk/aws-ec2';
-import { Ec2Service } from '@aws-cdk/aws-ecs';
 import * as s3 from '@aws-cdk/aws-s3';
-import { BlockPublicAccess } from '@aws-cdk/aws-s3';
+import { BlockPublicAccess, BucketPolicy, CfnAccessPoint } from '@aws-cdk/aws-s3';
 import * as s3deploy from '@aws-cdk/aws-s3-deployment';
-import { ServerHttp2Session } from 'http2';
+import * as config from '../config.json';
+import { RemovalPolicy, CfnOutput, cfnTagToCloudFormation } from '@aws-cdk/core';
+import { isNull } from 'util';
 
 export interface VPCStackProps extends cdk.StackProps {
     vpc: ec2.IVpc,
@@ -19,8 +20,7 @@ export class VPCStack extends cdk.Stack {
 
     constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
       super(scope, id, props);
-      
-        const portList = [443,80,1099,50000,51000,51001,51002];  
+                
         //create a VPC
         this.vpc = new ec2.Vpc(this, 'loadgen-vpc', {
             enableDnsHostnames: true,
@@ -34,18 +34,22 @@ export class VPCStack extends cdk.Stack {
             allowAllOutbound: true,
         });
         
-        portList.map((portNumber, index, arr) => {
+        config.tcpPortList.map((portNumber, index, arr) => {
             this.securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(portNumber));      
         });
-        this.securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(4445));
-
-        this.s3bucket = new s3.Bucket(this,'jmeter-data', {
-            blockPublicAccess: new BlockPublicAccess({ blockPublicPolicy: true })
-          });    
-          
-        const s3dep = new s3deploy.BucketDeployment(this, 'jmeterfiles', {
-        sources: [s3deploy.Source.asset('./files')],       
-        destinationBucket: this.s3bucket
+        
+        config.udpPortList.map((portNumber, index, arr) => {
+            this.securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(portNumber));
         });
+        
+        this.s3bucket = new s3.Bucket(this,'jmeter-data', {
+            blockPublicAccess: new BlockPublicAccess({ blockPublicPolicy: true }),
+            //removalPolicy: RemovalPolicy.DESTROY
+        });   
+
+        const s3dep = new s3deploy.BucketDeployment(this, 'jmeterfiles', {
+            sources: [s3deploy.Source.asset('./files')],       
+            destinationBucket: this.s3bucket
+        });          
     }
 }
